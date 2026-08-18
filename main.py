@@ -16,16 +16,13 @@ ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 
 if not ADMIN_API_KEY:
     raise RuntimeError("ADMIN_API_KEY is not set")
-'''
+
 app = FastAPI(
     title="Neopak QR Tracking",
     docs_url=None,
     redoc_url=None,
 )
-'''
-app = FastAPI(
-    title="Neopak QR Tracking",
-)
+
 
 def verify_admin(
     x_admin_key: str = Header(...)
