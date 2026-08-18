@@ -516,7 +516,29 @@ def generate_qr(
                 f'attachment; filename="{link.code}.png"'
         },
     )
+@app.delete("/admin/links/{link_id}")
+def delete_tracking_link(
+    link_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
+):
+    link = db.get(TrackingLink, link_id)
 
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Tracking link not found",
+        )
+
+    code = link.code
+
+    db.delete(link)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": f"Tracking link {code} deleted",
+    }
 
 @app.get("/{code}")
 def track(
