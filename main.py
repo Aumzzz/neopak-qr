@@ -1,20 +1,41 @@
+import os
+from fastapi import Header
 import hashlib
 import secrets
-
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.orm import Session
-
 from database import Base, engine, get_db
 from models import Customer, Campaign, TrackingLink, Scan
+import io
+import qrcode
+from fastapi.responses import StreamingResponse
 
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 
+if not ADMIN_API_KEY:
+    raise RuntimeError("ADMIN_API_KEY is not set")
+'''
+app = FastAPI(
+    title="Neopak QR Tracking",
+    docs_url=None,
+    redoc_url=None,
+)
+'''
 app = FastAPI(
     title="Neopak QR Tracking",
 )
 
-
+def verify_admin(
+    x_admin_key: str = Header(...)
+):
+    if x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid admin key",
+        )
+    
 Base.metadata.create_all(bind=engine)
 
 
@@ -31,6 +52,8 @@ class TrackingLinkCreate(BaseModel):
     campaign_id: int
     destination_url: HttpUrl
 
+class TrackingLinkUpdate(BaseModel):
+    destination_url: HttpUrl
 
 def generate_code():
     return secrets.token_urlsafe(6)
@@ -47,6 +70,7 @@ def home():
 def create_customer(
     data: CustomerCreate,
     db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
 ):
     customer = Customer(
         business_name=data.business_name,
@@ -65,6 +89,7 @@ def create_customer(
 @app.get("/admin/customers")
 def list_customers(
     db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
 ):
     customers = db.query(Customer).all()
 
@@ -81,6 +106,7 @@ def list_customers(
 def create_campaign(
     data: CampaignCreate,
     db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
 ):
     customer = db.get(
         Customer,
@@ -113,6 +139,7 @@ def create_campaign(
 def create_tracking_link(
     data: TrackingLinkCreate,
     db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
 ):
     campaign = db.get(
         Campaign,
@@ -158,6 +185,7 @@ def create_tracking_link(
 @app.get("/admin/links")
 def list_links(
     db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
 ):
     links = db.query(TrackingLink).all()
 
@@ -175,6 +203,7 @@ def list_links(
 @app.get("/admin/scans")
 def list_scans(
     db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
 ):
     scans = (
         db.query(Scan)
@@ -193,11 +222,39 @@ def list_scans(
         for scan in scans
     ]
 
+@app.patch("/admin/links/{link_id}")
+def update_tracking_link(
+    link_id: int,
+    data: TrackingLinkUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
+):
+    link = db.get(TrackingLink, link_id)
+
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Tracking link not found",
+        )
+
+    link.destination_url = str(data.destination_url)
+
+    db.commit()
+    db.refresh(link)
+
+    return {
+        "id": link.id,
+        "code": link.code,
+        "tracking_url": f"https://go.neopak.com.au/{link.code}",
+        "destination_url": link.destination_url,
+    }
+
 @app.get("/{code}")
 def track(
     code: str,
     request: Request,
     db: Session = Depends(get_db),
+    
 ):
     tracking_link = (
         db.query(TrackingLink)
@@ -248,3 +305,53 @@ def track(
         url=tracking_link.destination_url,
         status_code=302,
     )
+
+@app.get("/admin/links/{link_id}/qr")
+def generate_qr(
+    link_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
+):
+    link = db.get(TrackingLink, link_id)
+
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="Tracking link not found",
+        )
+
+    tracking_url = (
+        f"https://go.neopak.com.au/{link.code}"
+    )
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=12,
+        border=4,
+    )
+
+    qr.add_data(tracking_url)
+    qr.make(fit=True)
+
+    image = qr.make_image(
+        fill_color="black",
+        back_color="white",
+    )
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="image/png",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{link.code}.png"'
+        },
+    )
+
+class TrackingLinkUpdate(BaseModel):
+    destination_url: HttpUrl
+
