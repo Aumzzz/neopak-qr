@@ -59,6 +59,9 @@ def generate_code():
     return secrets.token_urlsafe(6)
 
 
+class TrackingLinkUpdate(BaseModel):
+    destination_url: HttpUrl
+
 @app.get("/")
 def home():
     return {
@@ -187,40 +190,143 @@ def list_links(
     db: Session = Depends(get_db),
     _: None = Depends(verify_admin),
 ):
-    links = db.query(TrackingLink).all()
-
-    return [
-        {
-            "id": link.id,
-            "code": link.code,
-            "campaign_id": link.campaign_id,
-            "destination_url": link.destination_url,
-            "active": link.active,
-        }
-        for link in links
-    ]
-
-@app.get("/admin/scans")
-def list_scans(
-    db: Session = Depends(get_db),
-    _: None = Depends(verify_admin),
-):
-    scans = (
-        db.query(Scan)
-        .order_by(Scan.scanned_at.desc())
+    links = (
+        db.query(TrackingLink)
+        .order_by(TrackingLink.id.desc())
         .all()
     )
 
-    return [
-        {
-            "id": scan.id,
-            "tracking_link_id": scan.tracking_link_id,
-            "scanned_at": scan.scanned_at,
-            "ip_hash": scan.ip_hash,
-            "user_agent": scan.user_agent,
-        }
-        for scan in scans
-    ]
+    results = []
+
+    for link in links:
+
+        scan_count = (
+            db.query(Scan)
+            .filter(
+                Scan.tracking_link_id
+                == link.id
+            )
+            .count()
+        )
+
+        campaign = link.campaign
+
+        customer = (
+            campaign.customer
+            if campaign
+            else None
+        )
+
+        results.append({
+            "id":
+                link.id,
+
+            "code":
+                link.code,
+
+            "tracking_url":
+                f"https://go.neopak.com.au/{link.code}",
+
+            "campaign_id":
+                link.campaign_id,
+
+            "campaign_name":
+                (
+                    campaign.name
+                    if campaign
+                    else None
+                ),
+
+            "customer_id":
+                (
+                    customer.id
+                    if customer
+                    else None
+                ),
+
+            "customer_name":
+                (
+                    customer.business_name
+                    if customer
+                    else None
+                ),
+
+            "destination_url":
+                link.destination_url,
+
+            "active":
+                link.active,
+
+            "scan_count":
+                scan_count,
+
+            "created_at":
+                link.created_at,
+        })
+
+    return results
+
+@app.get("/admin/links/{link_id}/qr")
+def generate_qr(
+    link_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
+):
+    link = db.get(
+        TrackingLink,
+        link_id
+    )
+
+    if not link:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Tracking link not found",
+        )
+
+    tracking_url = (
+        f"https://go.neopak.com.au/{link.code}"
+    )
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=
+            qrcode.constants.ERROR_CORRECT_M,
+        box_size=12,
+        border=4,
+    )
+
+    qr.add_data(
+        tracking_url
+    )
+
+    qr.make(
+        fit=True
+    )
+
+    image = qr.make_image(
+        fill_color="black",
+        back_color="white",
+    )
+
+    buffer = io.BytesIO()
+
+    image.save(
+        buffer,
+        format="PNG"
+    )
+
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="image/png",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{link.code}.png"'
+        },
+    )
+
 
 @app.patch("/admin/links/{link_id}")
 def update_tracking_link(
@@ -229,25 +335,60 @@ def update_tracking_link(
     db: Session = Depends(get_db),
     _: None = Depends(verify_admin),
 ):
-    link = db.get(TrackingLink, link_id)
+    link = db.get(
+        TrackingLink,
+        link_id
+    )
 
     if not link:
+
         raise HTTPException(
             status_code=404,
             detail="Tracking link not found",
         )
 
-    link.destination_url = str(data.destination_url)
+    link.destination_url = str(
+        data.destination_url
+    )
 
     db.commit()
+
     db.refresh(link)
 
     return {
-        "id": link.id,
-        "code": link.code,
-        "tracking_url": f"https://go.neopak.com.au/{link.code}",
-        "destination_url": link.destination_url,
+        "id":
+            link.id,
+
+        "code":
+            link.code,
+
+        "tracking_url":
+            f"https://go.neopak.com.au/{link.code}",
+
+        "destination_url":
+            link.destination_url,
     }
+
+@app.get("/admin/campaigns")
+def list_campaigns(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_admin),
+):
+    campaigns = (
+        db.query(Campaign)
+        .order_by(Campaign.id.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": campaign.id,
+            "customer_id": campaign.customer_id,
+            "name": campaign.name,
+            "created_at": campaign.created_at,
+        }
+        for campaign in campaigns
+    ]
 
 @app.get("/{code}")
 def track(
@@ -312,9 +453,13 @@ def generate_qr(
     db: Session = Depends(get_db),
     _: None = Depends(verify_admin),
 ):
-    link = db.get(TrackingLink, link_id)
+    link = db.get(
+        TrackingLink,
+        link_id
+    )
 
     if not link:
+
         raise HTTPException(
             status_code=404,
             detail="Tracking link not found",
@@ -326,13 +471,19 @@ def generate_qr(
 
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        error_correction=
+            qrcode.constants.ERROR_CORRECT_M,
         box_size=12,
         border=4,
     )
 
-    qr.add_data(tracking_url)
-    qr.make(fit=True)
+    qr.add_data(
+        tracking_url
+    )
+
+    qr.make(
+        fit=True
+    )
 
     image = qr.make_image(
         fill_color="black",
@@ -340,7 +491,12 @@ def generate_qr(
     )
 
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+
+    image.save(
+        buffer,
+        format="PNG"
+    )
+
     buffer.seek(0)
 
     return StreamingResponse(
@@ -351,7 +507,3 @@ def generate_qr(
                 f'attachment; filename="{link.code}.png"'
         },
     )
-
-class TrackingLinkUpdate(BaseModel):
-    destination_url: HttpUrl
-
