@@ -387,62 +387,74 @@ def list_campaigns(
         for campaign in campaigns
     ]
 
-@app.get("/{code}")
-def track(
-    code: str,
-    request: Request,
+@app.get("/admin/scans")
+def list_scans(
     db: Session = Depends(get_db),
-    
+    _: None = Depends(verify_admin),
 ):
-    tracking_link = (
-        db.query(TrackingLink)
-        .filter(TrackingLink.code == code)
-        .first()
+    scans = (
+        db.query(Scan)
+        .order_by(Scan.scanned_at.desc())
+        .all()
     )
 
-    if not tracking_link:
-        raise HTTPException(
-            status_code=404,
-            detail="Tracking link not found",
+    results = []
+
+    for scan in scans:
+
+        link = scan.tracking_link
+
+        campaign = (
+            link.campaign
+            if link
+            else None
         )
 
-    if not tracking_link.active:
-        raise HTTPException(
-            status_code=410,
-            detail="Tracking link inactive",
+        customer = (
+            campaign.customer
+            if campaign
+            else None
         )
 
-    ip_address = (
-        request.headers.get("CF-Connecting-IP")
-        or request.client.host
-        if request.client
-        else None
-    )
+        results.append({
+            "id":
+                scan.id,
 
-    ip_hash = None
+            "tracking_link_id":
+                scan.tracking_link_id,
 
-    if ip_address:
-        ip_hash = hashlib.sha256(
-            ip_address.encode()
-        ).hexdigest()
+            "code":
+                (
+                    link.code
+                    if link
+                    else None
+                ),
 
-    user_agent = request.headers.get(
-        "user-agent"
-    )
+            "campaign_name":
+                (
+                    campaign.name
+                    if campaign
+                    else None
+                ),
 
-    scan = Scan(
-        tracking_link_id=tracking_link.id,
-        ip_hash=ip_hash,
-        user_agent=user_agent,
-    )
+            "customer_name":
+                (
+                    customer.business_name
+                    if customer
+                    else None
+                ),
 
-    db.add(scan)
-    db.commit()
+            "scanned_at":
+                scan.scanned_at,
 
-    return RedirectResponse(
-        url=tracking_link.destination_url,
-        status_code=302,
-    )
+            "ip_hash":
+                scan.ip_hash,
+
+            "user_agent":
+                scan.user_agent,
+        })
+
+    return results
 
 @app.get("/admin/links/{link_id}/qr")
 def generate_qr(
@@ -504,3 +516,62 @@ def generate_qr(
                 f'attachment; filename="{link.code}.png"'
         },
     )
+
+
+@app.get("/{code}")
+def track(
+    code: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    
+):
+    tracking_link = (
+        db.query(TrackingLink)
+        .filter(TrackingLink.code == code)
+        .first()
+    )
+
+    if not tracking_link:
+        raise HTTPException(
+            status_code=404,
+            detail="Tracking link not found",
+        )
+
+    if not tracking_link.active:
+        raise HTTPException(
+            status_code=410,
+            detail="Tracking link inactive",
+        )
+
+    ip_address = (
+        request.headers.get("CF-Connecting-IP")
+        or request.client.host
+        if request.client
+        else None
+    )
+
+    ip_hash = None
+
+    if ip_address:
+        ip_hash = hashlib.sha256(
+            ip_address.encode()
+        ).hexdigest()
+
+    user_agent = request.headers.get(
+        "user-agent"
+    )
+
+    scan = Scan(
+        tracking_link_id=tracking_link.id,
+        ip_hash=ip_hash,
+        user_agent=user_agent,
+    )
+
+    db.add(scan)
+    db.commit()
+
+    return RedirectResponse(
+        url=tracking_link.destination_url,
+        status_code=302,
+    )
+
